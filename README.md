@@ -1,4 +1,4 @@
-Changing eye iris app
+Changing eye iris color app
 
 Based on U-Net network. App designed to change either in real time or from photos and videos the color of irsises.
 
