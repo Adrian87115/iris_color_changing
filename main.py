@@ -4,8 +4,10 @@ import model as m
 import torch
 import cv2
 import utilities as u
+import warnings
+warnings.filterwarnings("ignore")
 
-def main():
+def processLiveVideo():
     model = m.Model()
     model.getModel()
     model.model.eval()
@@ -73,5 +75,102 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
 
+
+def processVideo(input_path, output_path):
+    model = m.Model()
+    model.getModel()
+    model.model.eval()
+    cap = cv2.VideoCapture(input_path)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.6, min_tracking_confidence=0.6)
+    color = [255, 0, 127]
+    opacity = 0.11
+    frame_counter = 0
+    while cap.isOpened():
+        success, image = cap.read()
+        if not success:
+            break
+        frame_counter += 1
+        print(f"Processing frame {frame_counter}/{total_frames}")
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_height, image_width, _ = image.shape
+        results = face_mesh.process(image_rgb)
+        if results.multi_face_landmarks:
+            for landmarks in results.multi_face_landmarks:
+                left_eye_area, left_eye_box = u.getEyeArea(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), landmarks.landmark, u.left_boundaries, image_width, image_height, margin=0.2)
+                right_eye_area, right_eye_box = u.getEyeArea(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), landmarks.landmark, u.right_boundaries, image_width, image_height, margin=0.2)
+                left_eye_area_tensor = u.preprocessImage(left_eye_area, model).to(model.device)
+                right_eye_area_tensor = u.preprocessImage(right_eye_area, model).to(model.device)
+                with torch.no_grad():
+                    left_eye_pred = model.model(left_eye_area_tensor).cpu().squeeze(0).numpy()
+                    right_eye_pred = model.model(right_eye_area_tensor).cpu().squeeze(0).numpy()
+                left_eye_pred_image = u.postprocessPrediction(left_eye_pred[0], left_eye_area.shape[:2])
+                right_eye_pred_image = u.postprocessPrediction(right_eye_pred[0], right_eye_area.shape[:2])
+                mask_left = left_eye_pred_image > 0
+                mask_right = right_eye_pred_image > 0
+                blended_color_left = np.where(mask_left[:, :, None],
+                                              np.array(color, dtype=np.uint8) * opacity + image[left_eye_box[1]:left_eye_box[3],
+                                              left_eye_box[0]:left_eye_box[2]] * (1 - opacity),
+                                              image[left_eye_box[1]:left_eye_box[3], left_eye_box[0]:left_eye_box[2]])
+                blended_color_right = np.where(mask_right[:, :, None],
+                                               np.array(color, dtype=np.uint8) * opacity + image[right_eye_box[1]:right_eye_box[3],
+                                               right_eye_box[0]:right_eye_box[2]] * (1 - opacity),
+                                               image[right_eye_box[1]:right_eye_box[3], right_eye_box[0]:right_eye_box[2]])
+                image[left_eye_box[1]:left_eye_box[3], left_eye_box[0]:left_eye_box[2]] = blended_color_left
+                image[right_eye_box[1]:right_eye_box[3], right_eye_box[0]:right_eye_box[2]] = blended_color_right
+        out.write(image)
+    cap.release()
+    out.release()
+    cv2.destroyAllWindows()
+
+def processImage(input_path, output_path):
+    model = m.Model()
+    model.getModel()
+    model.model.eval()
+    image = cv2.imread(input_path)
+    if image is None:
+        print(f"Error: Unable to load image from {input_path}")
+        return
+    image_height, image_width, _ = image.shape
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.6, min_tracking_confidence=0.6)
+    color = [255, 0, 127]
+    opacity = 0.11
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(image_rgb)
+    if results.multi_face_landmarks:
+        for landmarks in results.multi_face_landmarks:
+            left_eye_area, left_eye_box = u.getEyeArea(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), landmarks.landmark, u.left_boundaries, image_width, image_height, margin=0.2)
+            right_eye_area, right_eye_box = u.getEyeArea(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), landmarks.landmark, u.right_boundaries, image_width, image_height, margin=0.2)
+            left_eye_area_tensor = u.preprocessImage(left_eye_area, model).to(model.device)
+            right_eye_area_tensor = u.preprocessImage(right_eye_area, model).to(model.device)
+            with torch.no_grad():
+                left_eye_pred = model.model(left_eye_area_tensor).cpu().squeeze(0).numpy()
+                right_eye_pred = model.model(right_eye_area_tensor).cpu().squeeze(0).numpy()
+            left_eye_pred_image = u.postprocessPrediction(left_eye_pred[0], left_eye_area.shape[:2])
+            right_eye_pred_image = u.postprocessPrediction(right_eye_pred[0], right_eye_area.shape[:2])
+            mask_left = left_eye_pred_image > 0
+            mask_right = right_eye_pred_image > 0
+            blended_color_left = np.where(mask_left[:, :, None],
+                                          np.array(color, dtype=np.uint8) * opacity + image[left_eye_box[1]:left_eye_box[3],
+                                          left_eye_box[0]:left_eye_box[2]] * (1 - opacity),
+                                          image[left_eye_box[1]:left_eye_box[3], left_eye_box[0]:left_eye_box[2]])
+            blended_color_right = np.where(mask_right[:, :, None],
+                                           np.array(color, dtype=np.uint8) * opacity + image[right_eye_box[1]:right_eye_box[3],
+                                           right_eye_box[0]:right_eye_box[2]] * (1 - opacity),
+                                           image[right_eye_box[1]:right_eye_box[3], right_eye_box[0]:right_eye_box[2]])
+            image[left_eye_box[1]:left_eye_box[3], left_eye_box[0]:left_eye_box[2]] = blended_color_left
+            image[right_eye_box[1]:right_eye_box[3], right_eye_box[0]:right_eye_box[2]] = blended_color_right
+    cv2.imwrite(output_path, image)
+
+
 if __name__ == "__main__":
-    main()
+    processLiveVideo()
+    # processVideo("input.mp4", "output.mp4")
+    # processImage("input2.jpg", "output2.jpg")
